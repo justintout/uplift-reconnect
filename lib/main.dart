@@ -1,73 +1,94 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
+import 'const.dart';
 import 'pages/home.dart';
 import 'pages/scan.dart';
 import 'pages/settings.dart';
 
-void main() => runApp(MyApp());
+void main() => runApp(const UpliftReconnectApp());
 
-class MyApp extends StatelessWidget {
-  // This widget is the root of your application.
+const _indigo = Color(0xff283593); // indigo 800 — controls and app bar
+const _offWhite = Color(0xffeeeeee); // grey 200 — the page and button fill
+
+class UpliftReconnectApp extends StatelessWidget {
+  const UpliftReconnectApp({super.key});
+
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [
-        // SettingsProvider(),
-        Provider.value(
-          value: 6
-        )
-      ],
-      child: MaterialApp(
-        title: 'Uplift reConnect',
-        theme: ThemeData(
-          primaryColor: Colors.indigo[800],
-          accentColor: Colors.grey[200],
-          backgroundColor: Colors.grey[200],
-          textTheme: TextTheme(
-            headline1: TextStyle(fontWeight: FontWeight.w200, color: Colors.grey[200], fontSize: 48.0),
-            headline2: TextStyle(fontWeight: FontWeight.w400, color: Colors.grey[200], fontSize: 36.0),
-            headline3: TextStyle(color: Colors.indigo, fontSize: 18.0),
-            headline5: TextStyle(color: Colors.grey[200]),
-            bodyText1: TextStyle(color: Colors.grey[200], fontWeight: FontWeight.w300),
-            bodyText2: TextStyle(color: Colors.grey[200], fontWeight: FontWeight.w300, fontSize: 18.0),
-            subtitle1: TextStyle(color: Colors.grey[200], fontWeight: FontWeight.w600, fontSize: 20.0),
-            subtitle2: TextStyle(color: Colors.grey[200], fontWeight: FontWeight.w300, fontSize: 18.0),
-            caption: TextStyle(color: Colors.grey[200], fontWeight: FontWeight.w200, fontSize: 16.0),
-            button: TextStyle(color: Colors.indigo)
-          ),
-          dialogBackgroundColor: Colors.indigo[800],
-          scaffoldBackgroundColor: Colors.indigo[800],
-          dialogTheme: DialogTheme(
-            backgroundColor: Colors.indigo[800],
-            titleTextStyle: TextStyle(color: Colors.grey[200]),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32.0)),
-          ),
-          cursorColor: Colors.grey[200],
-          inputDecorationTheme: InputDecorationTheme(
-            labelStyle: TextStyle(
-              color: Colors.grey[200],
-            ),
-            hintStyle: TextStyle(
-              color: Colors.grey[200].withAlpha(60)
-            ),
-            counterStyle: TextStyle(
-              color: Colors.grey[200]
-            ),
-          ),
-          buttonTheme: ButtonThemeData(
-            buttonColor: Colors.grey[200],
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32.0)),
-          ),
-          textSelectionHandleColor: Colors.indigoAccent
-        ),
-        initialRoute: '/',
-        routes: {
-          '/': (context) => HomePage(),
-          '/scan': (context) => ScanPage(),
-          '/settings': (context) => SettingsPage(),
-        },
-      ),
+    return MaterialApp(
+      title: appTitle,
+      theme: _theme,
+      initialRoute: '/',
+      routes: {
+        '/': (context) => const HomePage(),
+        '/scan': (context) => const ScanPage(),
+        '/settings': (context) => const SettingsPage(),
+      },
     );
   }
 }
+
+// The desk controls read as a panel of indigo tiles on a light page, so the
+// scheme is pinned rather than following the platform's light/dark setting.
+final _theme = ThemeData(
+  colorScheme: ColorScheme.fromSeed(
+    seedColor: _indigo,
+    brightness: Brightness.light,
+  ).copyWith(
+    primary: _indigo,
+    onPrimary: _offWhite,
+    secondary: _offWhite,
+    onSecondary: _indigo,
+    surface: _offWhite,
+    onSurface: _indigo,
+  ),
+  scaffoldBackgroundColor: _offWhite,
+  appBarTheme: const AppBarTheme(
+    backgroundColor: _indigo,
+    foregroundColor: _offWhite,
+  ),
+  dialogTheme: DialogThemeData(
+    backgroundColor: _indigo,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32.0)),
+  ),
+  textSelectionTheme: const TextSelectionThemeData(
+    cursorColor: _offWhite,
+    selectionHandleColor: Colors.indigoAccent,
+  ),
+  inputDecorationTheme: InputDecorationTheme(
+    labelStyle: const TextStyle(color: _offWhite),
+    hintStyle: TextStyle(color: _offWhite.withValues(alpha: 0.4)),
+    counterStyle: const TextStyle(color: _offWhite),
+  ),
+  textTheme: const TextTheme(
+    displayLarge: TextStyle(
+      fontWeight: FontWeight.w200,
+      color: _offWhite,
+      fontSize: 48,
+    ),
+    displayMedium: TextStyle(
+      fontWeight: FontWeight.w400,
+      color: _offWhite,
+      fontSize: 36,
+    ),
+    titleLarge: TextStyle(
+      color: _offWhite,
+      fontWeight: FontWeight.w600,
+      fontSize: 20,
+    ),
+    // Sits directly on the page, not on an indigo tile.
+    titleMedium: TextStyle(color: _indigo, fontSize: 18),
+    bodyLarge: TextStyle(color: _offWhite, fontWeight: FontWeight.w300),
+    bodyMedium: TextStyle(
+      color: _offWhite,
+      fontWeight: FontWeight.w300,
+      fontSize: 18,
+    ),
+    bodySmall: TextStyle(
+      color: _offWhite,
+      fontWeight: FontWeight.w200,
+      fontSize: 16,
+    ),
+    labelLarge: TextStyle(color: _indigo),
+  ),
+);

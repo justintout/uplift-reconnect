@@ -2,10 +2,17 @@
 > A Flutter app for controlling [Uplift desks](https://www.upliftdesk.com/uplift-v2-standing-desk-v2-or-v2-commercial/) with the Uplift Connect BLE module installed
 
 Since it seems Uplift Connect is no longer on the App or Google Play store, I created this to replace the functionality. 
-The app can move the desk up, down, or to saved "sitting" and "standing" heights. You can rename the desk.  
+The app can move the desk up, down, or to the desk's own stored "sitting" and "standing" presets. You can rename the desk.
+
+The sit and stand buttons use the presets held in the desk's controller rather than a height saved in the app, which is
+how the desk's physical button pad works. Hold either button to overwrite that preset with the desk's current height.
 
 ## Installation
-Clone this repository then, in the root, `flutter install`.
+Clone this repository, then from the root run `flutter pub get` and `flutter run` with a phone or emulator
+attached. The desk needs the Uplift Connect dongle plugged in and Bluetooth switched on. The app asks for
+the Bluetooth permissions it needs the first time it starts.
+
+To produce an installable build, use `flutter build apk` for Android or `flutter build ipa` for iOS.
 
 ## BLE API 
 The Uplift BLE API was reverse engineered by capturing communication between the Uplift Connect Android app and dongle. Captures were made with the Android "Bluetooth HCI Logging" developer option and by sniffing BLE packets using an [Ubertooth One](https://greatscottgadgets.com/ubertoothone/).
@@ -51,6 +58,24 @@ The Uplift BLE API was reverse engineered by capturing communication between the
 - `WRITE`: `0xf2, 0xf2, 0x01, 0x03, 0x01, 0xd0, 0x07, 0xdc, 0x7e`
     - sent from sitting height
     - nothing happens 
+
+Commands take the shape `0xf1, 0xf1, <command>, 0x00, <command>, 0x7e`: a fixed prefix, the command byte,
+then the command repeated after a zero and terminated with `0x7e`.
+
+| Command     | Packet                     | Effect                                              |
+|-------------|----------------------------|-----------------------------------------------------|
+| up          | `f1, f1, 01, 00, 01, 7e`   | move up while held                                  |
+| down        | `f1, f1, 02, 00, 02, 7e`   | move down while held                                |
+| save sit    | `f1, f1, 03, 00, 03, 7e`   | store the current height as the desk's sit preset   |
+| save stand  | `f1, f1, 04, 00, 04, 7e`   | store the current height as the desk's stand preset |
+| sit         | `f1, f1, 05, 00, 05, 7e`   | move to the desk's stored sit preset                |
+| stand       | `f1, f1, 06, 00, 06, 7e`   | move to the desk's stored stand preset              |
+| query       | `f1, f1, 07, 00, 07, 7e`   | ask the desk to report its current height           |
+
+The sit and stand presets live in the desk's controller rather than in the app, so they survive a
+reinstall and match what the physical button pad uses. Saving a preset is not acknowledged; the desk
+simply starts reporting the new position.
+
 #### Data Out (`0000ff02-0000-1000-8000-008005F9B34FB`)
 - `NOTIFY`, responds out to commands/height changes
 - does include changes from the physical buttonpad
@@ -121,5 +146,4 @@ The Uplift BLE API was reverse engineered by capturing communication between the
 
 ## Built With
 Check the in-app License page and `pubspec.yaml` to get a full list of software. In particular, this app uses:
-- [FlutterBlue](https://pub.dev/packages/flutter_blue) for BLE communications
-- [Provider](https://pub.dev/packages/provider) for state management 
+- [UniversalBLE](https://pub.dev/packages/universal_ble) for BLE communications 

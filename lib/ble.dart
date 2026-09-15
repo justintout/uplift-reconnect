@@ -2,246 +2,231 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_blue/flutter_blue.dart';
+import 'package:universal_ble/universal_ble.dart';
 
-enum ConnectionState {
-  CONNECTED, CONNECTING, DISCONNECTED, NO_DEVICE
+const serviceUuid = '0000ff12-0000-1000-8000-00805f9b34fb';
+const dataInCharacteristicUuid = '0000ff01-0000-1000-8000-00805f9b34fb';
+const dataOutCharacteristicUuid = '0000ff02-0000-1000-8000-00805f9b34fb';
+const nameCharacteristicUuid = '0000ff06-0000-1000-8000-00805f9b34fb';
+
+// Commands are `f1 f1 <command> 00 <command> 7e`: a fixed prefix, the command
+// byte, a zero, the command repeated as a checksum, and a terminator. Captured
+// from the Uplift Connect app; see the README for the full trace.
+const _queryPacket = [0xf1, 0xf1, 0x07, 0x00, 0x07, 0x7e];
+const _upPacket = [0xf1, 0xf1, 0x01, 0x00, 0x01, 0x7e];
+const _downPacket = [0xf1, 0xf1, 0x02, 0x00, 0x02, 0x7e];
+const _saveSitPacket = [0xf1, 0xf1, 0x03, 0x00, 0x03, 0x7e];
+const _saveStandPacket = [0xf1, 0xf1, 0x04, 0x00, 0x04, 0x7e];
+const _sitPacket = [0xf1, 0xf1, 0x05, 0x00, 0x05, 0x7e];
+const _standPacket = [0xf1, 0xf1, 0x06, 0x00, 0x06, 0x7e];
+
+const _connectionTimeout = Duration(seconds: 10);
+
+/// Android 12 and up gate scanning and connecting behind runtime permissions,
+/// and BLE silently does nothing without them. iOS and desktop hand these out
+/// at the OS level, so there is nothing to request.
+Future<bool> ensureBlePermissions() async {
+  try {
+    if (await UniversalBle.hasPermissions()) return true;
+    await UniversalBle.requestPermissions();
+    return true;
+  } catch (error) {
+    debugPrint('bluetooth permission denied: $error');
+    return false;
+  }
 }
 
-const serviceUUID = '0000ff12-0000-1000-8000-00805f9b34fb';
-const dataInCharacteristicUUID = '0000ff01-0000-1000-8000-00805f9b34fb';
-const dataOutCharacteristicUUID = '0000ff02-0000-1000-8000-00805f9b34fb';
-const nameCharacteristicUUID = '0000ff06-0000-1000-8000-00805f9b34fb';
+enum DeskState { connected, connecting, disconnected }
 
-const directionPacketDelay = 300; //ms
-const deskQueryPacket = [0xf1, 0xf1, 0x07, 0x00, 0x07, 0x7e]; 
-const deskUpPacket = [0xf1, 0xf1, 0x01, 0x00, 0x01, 0x7e];
-const deskDownPacket = [0xf1, 0xf1, 0x02, 0x00, 0x02, 0x7e];
-const heightNotificationDifference = 20; 
-const defaultTimeout = Duration(seconds: 10);
-
-// TODO: How does this actually work?
-// Doing some estimation here: 
-// https://www.upliftdesk.com/uplift-v2-standing-desk-v2-or-v2-commercial/
-// Desk has a travel height of 25.6", from 24.3" - 49.9", so we can approximate to using the
-// first value in the notification as the height.
-// This value is the bottom of the legs, so add 1" for the desktop.
+/// A height reported by the desk. The desk sends one byte where each unit is
+/// roughly a tenth of an inch above the bottom of the legs, which put the
+/// desktop 1" higher on the desk this was measured against.
 class Height {
-  Height(this._value);
-  static Height fromInches(double inches) {
-    var value = (((inches - 1) * 10) - 243).toInt();
-    return Height(value);
-  }
+  const Height(this.value);
 
-  final int _value;
-  
-  int get value => _value;
-  double get inches {
-    return ((243 + _value) / 10) + 1;
-  }
-  double get percent {
-    return (_value / 256) * 100;
-  }
-  String get inchesString => inches.toString() + "\"";
+  final int value;
+
+  double get inches => ((243 + value) / 10) + 1;
+  String get inchesString => '${inches.toStringAsFixed(1)}"';
 }
 
-class Device with ChangeNotifier {
-  Device(this._bluetoothDevice) {
-    _name = _bluetoothDevice.name;
-    _bluetoothDevice.state.listen((s) {
-      state = s;
-    });
+/// A single desk. Wraps the BLE plumbing and exposes the desk's own controls.
+class Device extends ChangeNotifier {
+  Device({required this.id, String? name}) : _name = name ?? id {
+    _connectionSubscription = UniversalBle.connectionStream(id).listen(
+      _onConnectionChanged,
+    );
   }
 
-  BluetoothDevice _bluetoothDevice;
-  BluetoothService _upliftService;
-  BluetoothCharacteristic get _dataInCharacteristic => _upliftService == null ? throw "service not discovered" : _upliftService.characteristics.firstWhere((c) => c.uuid == Guid(dataInCharacteristicUUID));
-  BluetoothCharacteristic get _dataOutCharacteristic => _upliftService == null ? throw "service not discovered" :  _upliftService.characteristics.firstWhere((c) => c.uuid == Guid(dataOutCharacteristicUUID));
-  BluetoothCharacteristic get _nameCharacteristic => _upliftService == null ? throw "service not discovered" : _upliftService.characteristics.firstWhere((c) => c.uuid == Guid(nameCharacteristicUUID));
-  StreamSubscription<List<int>> _listener;
-  
-  bool _connecting = false;
+  final String id;
 
-  String _stateText = "idle";
+  String _name;
+  String get name => _name;
+
+  DeskState _state = DeskState.disconnected;
+  DeskState get state => _state;
+
+  String _stateText = 'idle';
   String get stateText => _stateText;
-  void set stateText(String text) {
+
+  Height? _height;
+  Height? get height => _height;
+
+  /// True once services are discovered and notifications are flowing, so the
+  /// desk will accept commands.
+  bool _ready = false;
+  bool get ready => _ready;
+
+  StreamSubscription<bool>? _connectionSubscription;
+  StreamSubscription<Uint8List>? _valueSubscription;
+
+  Future<void> connect() async {
+    if (_state != DeskState.disconnected) {
+      return;
+    }
+    _state = DeskState.connecting;
+    _stateText = 'connecting';
+    notifyListeners();
+
+    try {
+      await UniversalBle.connect(id, timeout: _connectionTimeout);
+      await _discover();
+    } catch (error) {
+      _setDisconnected('failed to connect: $error');
+      // Failing partway through discovery can leave the link up.
+      try {
+        await UniversalBle.disconnect(id);
+      } catch (_) {
+        // Nothing to tear down.
+      }
+    }
+  }
+
+  Future<void> disconnect() async {
+    _setDisconnected('disconnected');
+    await UniversalBle.disconnect(id);
+  }
+
+  Future<void> _discover() async {
+    _stateText = 'discovering services';
+    notifyListeners();
+
+    final services = await UniversalBle.discoverServices(id);
+    if (!services.any((service) => service.uuid == serviceUuid)) {
+      throw StateError('no Uplift service on this device');
+    }
+
+    _stateText = 'subscribing to notifications';
+    notifyListeners();
+    await UniversalBle.subscribeNotifications(
+      id,
+      serviceUuid,
+      dataOutCharacteristicUuid,
+    );
+    _valueSubscription = UniversalBle.characteristicValueStream(
+      id,
+      dataOutCharacteristicUuid,
+    ).listen(_onNotification);
+
+    _state = DeskState.connected;
+    _stateText = 'connected';
+    _ready = true;
+    notifyListeners();
+
+    await sendQuery();
+  }
+
+  void _onConnectionChanged(bool isConnected) {
+    if (!isConnected) {
+      _setDisconnected('disconnected');
+    }
+  }
+
+  void _setDisconnected(String text) {
+    _valueSubscription?.cancel();
+    _valueSubscription = null;
+    _ready = false;
+    _state = DeskState.disconnected;
     _stateText = text;
     notifyListeners();
   }
 
-  BluetoothDeviceState _state = BluetoothDeviceState.disconnected;
-  BluetoothDeviceState get state => _state;
-  void set state(BluetoothDeviceState state) {
-    debugPrint("state in from device: ${state}");
-    if (_connecting) {
-      _state = BluetoothDeviceState.connecting;
-    } else {
-      _state = state;
-    }
-    if (state == BluetoothDeviceState.disconnected) {
-      stateText = "disconnected";
-    }
-    notifyListeners();
-  }
-
-  bool _ready = false;
-  bool get ready => _ready;
-  void set ready(bool r) {
-    _ready = r;
-    notifyListeners();
-  }
-
-  String _name;
-  String get name => _name;
-  void set name(String name) {
-    _name = name;
-    notifyListeners();
-  }
-  DeviceIdentifier get id => _bluetoothDevice.id;
-
-  Height _height;
-  Height get height => _height;
-  void set height(Height h) {
-    if (_height == null || h.value != _height.value) {
-      _height = h;
-      notifyListeners();
-    }
-  }
-  
-  Future<void> connect({timeout = const Duration(seconds: 5), autoConnect = false}) async {
-    debugPrint("connecting to ${_bluetoothDevice.id}");
-    stateText = "connecting";
-    return  _bluetoothDevice.connect(timeout: timeout, autoConnect: autoConnect).timeout(timeout, onTimeout: () {
-        stateText = "connection timed out";
-        throw "connection timed out";
-      })
-      .then((_) => discover())
-      .catchError((error) async {
-        if (error is TimeoutException) {
-          throw "uncaught timeoutException: ${error.toString()}";
-        }
-        if (error is PlatformException) {
-          debugPrint("caught platformException: ${error.toString()}");
-          if (error.code == "already_connected") {
-            _connecting = false;
-            return discover();
-          }
-        }
-        throw "uncaught: ${error.toString()}";
-      });
-  }
-
-  Future<void> discover() async {
-    stateText = "discovering services";
-    var services = await _bluetoothDevice.discoverServices();
-    try {
-      _upliftService = services.firstWhere((service) => service.uuid == Guid(serviceUUID));
-      stateText = "subscribing to notifications";
-      _connecting = false;
-      await subscribe();
-      await sendQuery();
-      state = await _bluetoothDevice.state.first;
-      ready = true;
-      stateText = "connected";
+  /// Three packet shapes arrive on data-out, all carrying the height byte in a
+  /// different place. See the README for captured samples of each.
+  void _onNotification(Uint8List notification) {
+    // Unsolicited: the desk's own button pad moved it.
+    if (notification.length == 3) {
+      _setHeight(Height(notification[0]));
       return;
-    } catch (e) {
-      debugPrint(e);
-      stateText = "failed to connect";
-      throw "failed to connect, couldn't find service";
     }
-  }
-
-  disconnect() {
-    stateText = "disconnected";
-    ready = false;
-    unsubscribe();
-    return _bluetoothDevice.disconnect();
-  }
-
-  subscribe() async {
-    _listener = _dataOutCharacteristic.value.listen((notification){
-      if (notification.length < 8) {
-        return;
-      }
-      if (notification.first == 242 && notification.last != 126) {
-        // first packet back from query. doesn't contain height;
-        return;
-      }
-      if (notification.first != 242) {
-        // second packet back from query
-        height = Height(notification[17]);
-        return;
-      }
-      height = Height(notification[5]);
-    });
-    await _dataOutCharacteristic.setNotifyValue(true);
-  }
-
-  unsubscribe() async {
-    if (_listener != null) {
-    _listener.cancel();
+    if (notification.length < 18) {
+      return;
     }
-    await _dataOutCharacteristic.setNotifyValue(false);
-  }
-
-  rename(String newName) async {
-    var packet = utf8.encode(newName);
-    debugPrint("new name packet: $packet");
-    await _nameCharacteristic.write(utf8.encode(newName));
-    await _updateName();
-  }
-
-  sendQuery() {
-    debugPrint("send height query");
-    _send(deskQueryPacket);
-  }
-
-  up() {
-    debugPrint("up");
-    _send(deskUpPacket);
-  }
-
-  down() {
-    debugPrint("down");
-    _send(deskDownPacket);
-  }
-
-  stand(int value) {
-    debugPrint("stand, move ${value > height._value ? "up" : "down" } to $value");
-    moveTo(value);
-  }
-
-  sit(int value) {
-    debugPrint("sit, move ${value > height._value ? "up" : "down" } to $value");
-    moveTo(value);
-  }
-
-  moveTo(int value) {
-    var direction = _height.value > value ? "down" : "up";
-    var timer = Timer.periodic(Duration(milliseconds: 1000), (_) {
-      switch(direction) {
-        case "up":
-          return up();
-        case "down":
-          return down();
+    if (notification.first == 0xf2) {
+      // First half of a query response. Carries no height, and is the only
+      // packet that ends in something other than the 0x7e terminator.
+      if (notification.last == 0x7e) {
+        _setHeight(Height(notification[5]));
       }
-    });
-    // TODO: tune overshoot 
-    var upOvershootCorrection = 13;
-    var downOvershootCorrection = 18;
-    this.addListener(() {
-      if (direction == "down" ? height.value <= value + downOvershootCorrection : height.value >= value - upOvershootCorrection ) {
-        timer.cancel();
-      }
-    });
+      return;
+    }
+    // Second half of a query response.
+    _setHeight(Height(notification[17]));
   }
 
-  _updateName() async {
-    name = utf8.decode(await _nameCharacteristic.read());
+  void _setHeight(Height height) {
+    if (_height?.value == height.value) {
+      return;
+    }
+    _height = height;
+    notifyListeners();
   }
 
-  _send(List<int> packet) async {
-    await _dataInCharacteristic.write(packet);
+  Future<void> rename(String newName) async {
+    await UniversalBle.write(
+      id,
+      serviceUuid,
+      nameCharacteristicUuid,
+      Uint8List.fromList(utf8.encode(newName)),
+    );
+    final written = await UniversalBle.read(
+      id,
+      serviceUuid,
+      nameCharacteristicUuid,
+    );
+    _name = utf8.decode(written);
+    notifyListeners();
+  }
+
+  Future<void> sendQuery() => _send(_queryPacket);
+  Future<void> up() => _send(_upPacket);
+  Future<void> down() => _send(_downPacket);
+
+  /// Move to the height the desk has stored as its sitting preset.
+  Future<void> sit() => _send(_sitPacket);
+
+  /// Move to the height the desk has stored as its standing preset.
+  Future<void> stand() => _send(_standPacket);
+
+  /// Store the desk's current height as its sitting preset.
+  Future<void> saveSit() => _send(_saveSitPacket);
+
+  /// Store the desk's current height as its standing preset.
+  Future<void> saveStand() => _send(_saveStandPacket);
+
+  // Every desk command goes out on data-in, which is write-without-response.
+  Future<void> _send(List<int> packet) => UniversalBle.write(
+    id,
+    serviceUuid,
+    dataInCharacteristicUuid,
+    Uint8List.fromList(packet),
+    withoutResponse: true,
+  );
+
+  @override
+  void dispose() {
+    _connectionSubscription?.cancel();
+    _valueSubscription?.cancel();
+    super.dispose();
   }
 }

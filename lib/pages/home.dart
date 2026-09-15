@@ -1,520 +1,464 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_blue/flutter_blue.dart';
-import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:universal_ble/universal_ble.dart';
 
 import '../ble.dart';
 import '../const.dart';
 
 class HomePage extends StatefulWidget {
-  HomePage({Key key}) : super(key: key);
+  const HomePage({super.key});
 
   @override
-  _HomePageState createState() => _HomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class AutoconnectingHero extends StatelessWidget {
-  const AutoconnectingHero({Key key}) : super(key: key);
+class _HomePageState extends State<HomePage> {
+  Device? _device;
+  bool _checkingForDesk = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _adoptConnectedDesk();
+  }
+
+  // The dongle keeps a connection to the phone after the app closes, so on
+  // launch look for a desk that is already connected and pick it up.
+  Future<void> _adoptConnectedDesk() async {
+    Device? desk;
+    try {
+      await ensureBlePermissions();
+      final devices = await UniversalBle.getSystemDevices(
+        withServices: [serviceUuid],
+      );
+      if (devices.length == 1) {
+        desk = Device(id: devices.single.deviceId, name: devices.single.name);
+      }
+    } catch (error) {
+      debugPrint('could not list connected desks: $error');
+    }
+    if (!mounted) return;
+    setState(() {
+      _device = desk;
+      _checkingForDesk = false;
+    });
+    await desk?.connect();
+  }
+
+  Future<void> _scan() async {
+    final result = await Navigator.pushNamed(context, '/scan');
+    if (result is! BleDevice || !mounted) return;
+    setState(() {
+      _device = Device(id: result.deviceId, name: result.name);
+    });
+    await _device?.connect();
+  }
+
+  Future<void> _disconnectAll() async {
+    final devices = await UniversalBle.getSystemDevices(
+      withServices: [serviceUuid],
+    );
+    for (final device in devices) {
+      await UniversalBle.disconnect(device.deviceId);
+    }
+  }
+
+  Future<void> _rename(Device device) async {
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (context) => _RenameDialog(currentName: device.name),
+    );
+    if (newName == null || newName.isEmpty || newName == device.name) return;
+    await device.rename(newName);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Flexible(
-      flex: 5,
-      child: Container(
-        constraints: BoxConstraints(minWidth: double.infinity),
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(32.0), color: Theme.of(context).primaryColor),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [Text("Autoconnecting...", style: Theme.of(context).textTheme.headline2)],
-        )
-      )
+    if (_checkingForDesk) {
+      return const _StartupScaffold();
+    }
+    final device = _device;
+    if (device == null) {
+      return _scaffold(context, null);
+    }
+    return ListenableBuilder(
+      listenable: device,
+      builder: (context, _) => _scaffold(context, device),
+    );
+  }
+
+  Widget _scaffold(BuildContext context, Device? device) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(appTitle),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => Navigator.pushNamed(context, '/settings'),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Flex(
+          direction: Axis.vertical,
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            Flexible(flex: 5, child: _hero(context, device)),
+            Flexible(flex: 1, child: _statusLine(context, device)),
+            Flexible(flex: 3, child: ControlButtonBar(device: device)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _hero(BuildContext context, Device? device) {
+    if (device == null) {
+      return _Panel(
+        child: _HeroContents(
+          title: 'Tap to scan for desk',
+          onTap: _scan,
+          onLongPress: _disconnectAll,
+        ),
+      );
+    }
+
+    final contents = switch (device.state) {
+      DeskState.connecting => _HeroContents(
+        title: device.name,
+        subtitle: device.id,
+        caption: 'connecting...',
+      ),
+      DeskState.connected => _HeroContents(
+        title: device.name,
+        subtitle: device.id,
+        caption: 'connected.\ntap to disconnect.\nlong press to rename.',
+        onTap: device.disconnect,
+        onLongPress: () => _rename(device),
+      ),
+      DeskState.disconnected => _HeroContents(
+        title: device.name,
+        subtitle: device.id,
+        caption:
+            'disconnected.\ntap to reconnect.\nlong press to scan again.',
+        onTap: device.connect,
+        onLongPress: _scan,
+      ),
+    };
+    return _Panel(child: contents);
+  }
+
+  Widget _statusLine(BuildContext context, Device? device) {
+    final style = Theme.of(context).textTheme.titleMedium;
+    final height = device?.height;
+    if (device == null || !device.ready || height == null) {
+      return Text(device?.stateText ?? ' ', style: style);
+    }
+    return Text('Height: ${height.inchesString}', style: style);
+  }
+}
+
+class _StartupScaffold extends StatelessWidget {
+  const _StartupScaffold();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text(appTitle)),
+      body: const Padding(
+        padding: EdgeInsets.all(8.0),
+        child: _Panel(
+          child: _HeroContents(
+            title: 'Initializing...',
+            subtitle: 'One moment please.',
+          ),
+        ),
+      ),
     );
   }
 }
 
-class ControlButtonBar extends StatefulWidget {
-  ControlButtonBar({Key key}) : super(key: key);
+/// The rounded indigo tile the hero and control bar sit on.
+class _Panel extends StatelessWidget {
+  const _Panel({required this.child, this.padding});
 
-  @override
-  _ControlButtonBarState createState() => _ControlButtonBarState();
-}
+  final Widget child;
+  final EdgeInsets? padding;
 
-class _ControlButtonBarState extends State<ControlButtonBar> {
   @override
   Widget build(BuildContext context) {
-    return Flexible(
-      flex: 3,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(32.0),
-          color: Theme.of(context).primaryColor
-        ),
-        child: Consumer2<Device, SharedPreferences>(
-          builder: (context, device, preferences, _) {
-            var enabled = device != null && device.ready;
-            return ButtonBar(
-            alignment: MainAxisAlignment.spaceAround,
-            children: [
-              ControlButton(
-                icon: Icon(Icons.arrow_upward, size: 52.0, color: Theme.of(context).primaryColor), 
-                held: true, 
-                enabled:  enabled,
-                command: enabled ? device.up : () => debugPrint("up but button not enabled"),
-              ),
-              ControlButton(
-                icon: Icon(Icons.arrow_downward, size: 52.0, color: Theme.of(context).primaryColor), 
-                held: true, 
-                enabled:  enabled,
-                command: enabled ? device.down : () => debugPrint("down but button not enabled")
-              ),
-              ControlButton(
-                icon: Icon(Icons.accessibility, size: 52.0, color: Theme.of(context).primaryColor), 
-                held: false, 
-                enabled:  enabled ,
-                command: enabled
-                ? () {
-                  try {
-                    var height = preferences.getInt(PreferenceKey.STANDING_VALUE);
-                    device.stand(height);
-                  } catch (e) {
-                    showDialog(context: context, builder: standNotSetAlert);
-                  }
-                } 
-                : () => debugPrint("stand but button not enabled"),
-                longPressCommand: () {
-                  var height = device.height;
-                  preferences.setInt(PreferenceKey.STANDING_VALUE, height.value)
-                    .then((success) {
-                      if (success) {
-                        Scaffold.of(context).showSnackBar(
-                          SnackBar(content: Text("Saved standing height: ${height.inches}\""),)
-                        );
-                      }
-                    }).catchError((error) {
-                      Scaffold.of(context).showSnackBar(
-                          SnackBar(content: Text("Couldn't save standing height: ${error.toString()}"))
-                      );
-                    });
-                },
-              ),
-              ControlButton(
-                icon: Icon(Icons.airline_seat_legroom_normal, size: 52.0, color: Theme.of(context).primaryColor), 
-                held: false, 
-                enabled: enabled,
-                command: enabled
-                ? () {
-                  try {
-                    var height = preferences.getInt(PreferenceKey.SITTING_VALUE);
-                    device.sit(height);
-                  } catch (e) {
-                    showDialog(context: context, builder: sitNotSetAlert);
-                  }
-                } 
-                : () => debugPrint("stand but button not enabled"),
-                longPressCommand: () {
-                  var height = device.height;
-                  preferences.setInt(PreferenceKey.SITTING_VALUE, height.value)
-                    .then((success) {
-                      if (success) {
-                        Scaffold.of(context).showSnackBar(
-                          SnackBar(content: Text("Saved sitting height: ${height.inches}\""))
-                        );
-                      }
-                    }).catchError((error) {
-                      Scaffold.of(context).showSnackBar(
-                          SnackBar(content: Text("Couldn't save sitting height: ${error.toString()}"))
-                      );
-                    });
-                }
-              )
-            ]
-          );
-        })
-      )
-    );  
+    return Container(
+      width: double.infinity,
+      padding: padding,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(32.0),
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      child: child,
+    );
   }
 }
 
-class _HomePageState extends State<HomePage> {
+class _HeroContents extends StatelessWidget {
+  const _HeroContents({
+    required this.title,
+    this.subtitle,
+    this.caption,
+    this.onTap,
+    this.onLongPress,
+  });
 
-  static const appTitle = 'Uplift reConnect'; 
-  
-  Future<Device> _device;
-  bool _isCheckingAutoconnect = true;
-  bool _isAutoconnecting = false;
+  final String title;
+  final String? subtitle;
+  final String? caption;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
 
-  // TODO: split to class, methods are antipattern
-  Widget get _hero {
-    var flex = 5;
-    var constraints = BoxConstraints(minWidth: double.infinity);
-    var decoration = BoxDecoration(borderRadius: BorderRadius.circular(32.0), color: Theme.of(context).primaryColor);
-    return Consumer<Device>(
-      builder: (context, device, _) {
-        if (_isAutoconnecting) { 
-          return AutoconnectingHero();
-        }
-        // before we have a device selected, show the "scan" hero
-        if (device == null) {
-          return Flexible(
-            flex: flex,
-            child: Container(
-              constraints: constraints,
-              decoration: decoration,
-              child: InkWell(
-                onTap: () async {
-                  var scanResult = await Navigator.pushNamed(context, '/scan');
-                  if (scanResult is ScanResult) {
-                    setState(() {
-                      _device = Future.value(Device(scanResult.device));
-                      _device.then((device) => device.connect());
-                    });
-                  }
-                },
-                onLongPress: () async {
-                  var devices = await FlutterBlue.instance.connectedDevices;
-                  devices.forEach((device) => device.disconnect());
-                },
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [Text("Tap to scan for desk", style: Theme.of(context).textTheme.headline2)]
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final subtitle = this.subtitle;
+    final caption = this.caption;
+
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(32.0),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              title,
+              style: textTheme.displayMedium,
+              textAlign: TextAlign.center,
+            ),
+            if (subtitle != null)
+              Text(
+                subtitle,
+                style: textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            if (caption != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Text(
+                  caption,
+                  style: textTheme.bodyLarge,
+                  textAlign: TextAlign.center,
                 ),
-              )
-            )
-          );
-        }
-        // once a device is selected, show the device info hero
-        return Flexible(
-            flex: flex,
-            child: Container(
-              constraints: constraints,
-              decoration: decoration,
-              child: Builder(
-                builder: (context) {
-                  switch(device.state) {
-                    case BluetoothDeviceState.connecting:
-                      return Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                            Text(device.name, style: Theme.of(context).textTheme.headline1.apply(color: Theme.of(context).textTheme.headline1.color.withAlpha(60))),
-                            Text(device.id.toString(), style: Theme.of(context).textTheme.headline2.apply(color: Theme.of(context).textTheme.headline2.color.withAlpha(60))),
-                            Text("connecting...", style: Theme.of(context).textTheme.bodyText1)
-                          ],
-                      );
-                    case BluetoothDeviceState.disconnecting:
-                      return Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                            Text(device.name, style: Theme.of(context).textTheme.headline1.apply(color: Theme.of(context).textTheme.headline1.color.withAlpha(60))),
-                            Text(device.id.toString(), style: Theme.of(context).textTheme.headline2.apply(color: Theme.of(context).textTheme.headline2.color.withAlpha(60))),
-                            Text("disconnecting...", style: Theme.of(context).textTheme.bodyText1)
-                          ],
-                      );
-                    case BluetoothDeviceState.disconnected:
-                      return InkWell(
-                        onTap: () => device.connect(timeout: Duration(seconds: 5), autoConnect: true),
-                        onLongPress: () async {
-                          var scanResult = await Navigator.pushNamed(context, '/scan');
-                          if (scanResult is ScanResult) {
-                            setState(() {
-                              _device = Future.value(Device(scanResult.device));
-                            });
-                          }
-                        },
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(device.name, style: Theme.of(context).textTheme.headline1.apply(color: Theme.of(context).textTheme.headline1.color.withAlpha(60))),
-                            Text(device.id.toString(), style: Theme.of(context).textTheme.headline2.apply(color: Theme.of(context).textTheme.headline2.color.withAlpha(60))),
-                            Text("disconnected.", style: Theme.of(context).textTheme.bodyText1),
-                            Text("tap to reconnect.", style: Theme.of(context).textTheme.bodyText1),
-                            Text("long press to scan again.", style: Theme.of(context).textTheme.bodyText1)
-                          ],
-                        ),
-                      );
-                    case BluetoothDeviceState.connected:
-                      return InkWell(
-                        onTap: () => device.disconnect(),
-                        onLongPress: () async {
-                          var newName = await showDialog(
-                            context: context,
-                            builder: (context) {
-                              final controller = TextEditingController(text: device.name);
-                              return AlertDialog(
-                                title: Row(
-                                  children: [
-                                    Icon(Icons.edit, color: Theme.of(context).accentColor),
-                                    Text("Enter new desk name")
-                                  ],
-                                ),
-                                content: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    TextField(
-                                      maxLength: 20,
-                                      controller: controller,
-                                      autofocus: true,
-                                    )
-                                  ],
-                                ),
-                                actions: [
-                                  FlatButton(
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32.0)),
-                                    color: Theme.of(context).accentColor,
-                                    child: Text("Cancel", style: Theme.of(context).textTheme.button),
-                                    onPressed: () => Navigator.pop(context),
-                                  ),
-                                  FlatButton(
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32.0)),
-                                    color: Theme.of(context).accentColor,
-                                    child: Text("Save", style: Theme.of(context).textTheme.button),
-                                    onPressed: () {
-                                      var value = controller.value.text;
-                                      Navigator.pop(context, value);
-                                    }
-                                  )
-                                ],
-                              );
-                            }
-                          );
-                          if (newName != null && newName != device.name) {
-                            debugPrint("new device name: $newName");
-                            await device.rename(newName);
-                          }
-                        },
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(device.name, style: Theme.of(context).textTheme.headline1),
-                            Text(device.id.toString(), style: Theme.of(context).textTheme.headline2),
-                            Text("connected.", style: Theme.of(context).textTheme.bodyText1),
-                            Text("tap to disconnect.", style: Theme.of(context).textTheme.bodyText1),
-                            Text("long press to rename.", style: Theme.of(context).textTheme.bodyText1)
-                          ],
-                        )
-                      );
-                  }
-                  assert(false, "this line should not be reached. not all cases for BluetoothDeviceState are covered");
-                  return null;
-              })
-            )
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ControlButtonBar extends StatelessWidget {
+  const ControlButtonBar({super.key, required this.device});
+
+  final Device? device;
+
+  @override
+  Widget build(BuildContext context) {
+    final device = this.device;
+    final enabled = device?.ready ?? false;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Four circles across the panel, leaving room for the gaps.
+        final diameter = (constraints.maxWidth / 4) - 16.0;
+        return _Panel(
+          padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _ControlButton(
+                icon: Icons.arrow_upward,
+                diameter: diameter,
+                enabled: enabled,
+                onHold: device?.up,
+              ),
+              _ControlButton(
+                icon: Icons.arrow_downward,
+                diameter: diameter,
+                enabled: enabled,
+                onHold: device?.down,
+              ),
+              _ControlButton(
+                icon: Icons.accessibility,
+                diameter: diameter,
+                enabled: enabled,
+                onPressed: device == null ? null : () => device.stand(),
+                onLongPress: device == null
+                    ? null
+                    : () => _savePreset(context, device.saveStand, 'standing'),
+              ),
+              _ControlButton(
+                icon: Icons.airline_seat_legroom_normal,
+                diameter: diameter,
+                enabled: enabled,
+                onPressed: device == null ? null : () => device.sit(),
+                onLongPress: device == null
+                    ? null
+                    : () => _savePreset(context, device.saveSit, 'sitting'),
+              ),
+            ],
+          ),
         );
       },
     );
   }
 
-  Widget get _spacer {
-    return Flexible(
-      flex: 1, 
-      child: Consumer<Device>(
-        builder: (context, device, _) {
-          if (device == null) return Text(" ", style: Theme.of(context).textTheme.headline3);
-          if (!device.ready || device.height == null) return Text("Device state: ${device.stateText}", style: Theme.of(context).textTheme.headline3);
-          return Text("Height: ${device.height.inches}\"", style: Theme.of(context).textTheme.headline3);
-        }
-      )
-    );
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    // check if there's a single desk device that autoconnected
-    // if there is, use this device. 
-    // TODO: I'd much rather use OUI to do this. Scanning for the service isn't nice.
-    FlutterBlue.instance.connectedDevices.then((devices) {
-      List<BluetoothDevice> upliftDevices = [];
-      debugPrint("already connected to ${devices.length} ble device(s)");
-      if (devices.length == 0) {
-        setState((){
-          _device = Future.value(null);
-          _isCheckingAutoconnect = false;
-        });
-        return;
-      }
-      Future.wait(
-        devices.map((device) => device.discoverServices().then((services) {
-          debugPrint("services for ${device.id}: $services");
-            if (services.indexWhere((service) => service.uuid == Guid(serviceUUID)) > -1) {
-              upliftDevices.add(device);
-              return;
-            }
-        }))
-      ).then((_) {
-        debugPrint("already connected to ${upliftDevices.length} desk(s)");
-        if (upliftDevices.length == 1) {
-          debugPrint("already connected to desk ${upliftDevices[0].id}");
-          setState((){
-            _device = Future.value(Device(upliftDevices[0]));
-            _isCheckingAutoconnect = false;
-            _isAutoconnecting = true;
-          });
-          _device
-            .then((device) => device.discover())
-            .then((_) => setState(() => _isAutoconnecting = false));
-          return;
-        }
-        setState((){
-          _device = Future.value(null);
-          _isCheckingAutoconnect = false;
-        });
-      });
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<Device>(
-      future: _device,
-      initialData: null,
-      builder: (context, snapshot) {
-        if (snapshot.data == null && _isCheckingAutoconnect) {
-          return Scaffold(
-            backgroundColor: Theme.of(context).backgroundColor,
-            appBar: AppBar(
-              title: Text(appTitle)
-            ),
-            body: Padding(
-              padding: EdgeInsets.all(8.0),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).primaryColor,
-                  borderRadius: BorderRadius.circular(8.0)
-                ),
-                constraints: BoxConstraints.expand(width: double.infinity),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text("Initializing...", style: Theme.of(context).textTheme.headline1),
-                    Text("One moment please.", style: Theme.of(context).textTheme.headline2)
-                  ]
-                )
-              )
-            )
-          );
-        }
-        return MultiProvider(
-          providers: [
-            ChangeNotifierProvider.value(value: snapshot.data),
-            FutureProvider.value(
-              value: SharedPreferences.getInstance(),
-              catchError: (_, error) {
-                debugPrint("error getting prefs instance: ${error.toString()}");
-              },
-            )
-          ],
-          child: Scaffold(
-            backgroundColor: Theme.of(context).backgroundColor,
-            appBar: AppBar(
-              title: Text(appTitle),
-              actions: <Widget>[
-                IconButton(icon: Icon(Icons.settings), onPressed: () => Navigator.pushNamed(context, '/settings'))
-              ], 
-            ),
-            body: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Container(
-                child: Flex(
-                  direction: Axis.vertical,
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [_hero, _spacer, ControlButtonBar()]
-                )
-              )
-            )
-          )
-        );
-      }
+  Future<void> _savePreset(
+    BuildContext context,
+    Future<void> Function() save,
+    String position,
+  ) async {
+    await save();
+    if (!context.mounted) return;
+    // The desk stores the preset itself and sends no acknowledgement.
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Desk saved its $position position.')),
     );
   }
 }
 
-class ControlButton extends StatefulWidget {
-  ControlButton({Key key, this.icon, this.command, this.held, this.enabled, this.longPressCommand}) : super(key: key);
+/// A circular desk control. Buttons with [onHold] repeat while held, so the
+/// desk keeps moving until the finger comes off.
+class _ControlButton extends StatefulWidget {
+  const _ControlButton({
+    required this.icon,
+    required this.diameter,
+    required this.enabled,
+    this.onPressed,
+    this.onLongPress,
+    this.onHold,
+  });
 
-  final Icon icon;
-  final void Function() command;
-  final void Function() longPressCommand;
-  final bool held;
+  final IconData icon;
+  final double diameter;
   final bool enabled;
+  final VoidCallback? onPressed;
+  final VoidCallback? onLongPress;
+  final VoidCallback? onHold;
 
   @override
-  _ControlButtonState createState() => _ControlButtonState();
+  State<_ControlButton> createState() => _ControlButtonState();
 }
 
-class _ControlButtonState extends State<ControlButton> {
+class _ControlButtonState extends State<_ControlButton> {
+  static const _holdInterval = Duration(milliseconds: 1000);
 
-  Timer _timer;
+  Timer? _holdTimer;
 
-  _start() {
-    _timer = Timer.periodic(Duration(milliseconds: 100), (timer) => timer.tick % 10 == 1 ? widget.command() : null);
+  void _startHold() {
+    widget.onHold?.call();
+    _holdTimer = Timer.periodic(_holdInterval, (_) => widget.onHold?.call());
   }
 
-  _stop() {
-    _timer.cancel();
+  void _stopHold() {
+    _holdTimer?.cancel();
+    _holdTimer = null;
+  }
+
+  @override
+  void dispose() {
+    _stopHold();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return widget.held 
-    ? Container(
-       child: GestureDetector(
-         onLongPressStart: (details) => _start(),
-         onLongPressEnd: (details) => _stop(),
-         child: ButtonTheme(
-           height: 150.0,
-           buttonColor: Theme.of(context).accentColor,
-           disabledColor: Theme.of(context).accentColor.withAlpha(30),
-           shape: CircleBorder(),
-           child: RaisedButton(
-            child: widget.icon,
-            color: Theme.of(context).accentColor,
-            onPressed: widget.enabled ? () => {} : null, 
-            elevation: 8.0,
-           ),
-         ),
-       ),
-    )
-    : ButtonTheme(
-      height: 500.0,
-      buttonColor: Theme.of(context).accentColor,
-      disabledColor: Theme.of(context).accentColor.withAlpha(30),
-      shape: CircleBorder(),
-      child: RaisedButton(
-        child: widget.icon,
-        color: Theme.of(context).accentColor,
-        onPressed: widget.enabled ? () => widget.command() : null,
-        onLongPress: widget.enabled ? () => widget.longPressCommand() : null,
-        elevation: 8.0,
-      )
+    final scheme = Theme.of(context).colorScheme;
+
+    final button = SizedBox(
+      width: widget.diameter,
+      height: widget.diameter,
+      child: ElevatedButton(
+        // A held button still needs a non-null callback to render as enabled.
+        onPressed: widget.enabled ? (widget.onPressed ?? () {}) : null,
+        style: ElevatedButton.styleFrom(
+          shape: const CircleBorder(),
+          backgroundColor: scheme.secondary,
+          foregroundColor: scheme.primary,
+          disabledBackgroundColor: scheme.secondary.withValues(alpha: 0.12),
+          disabledForegroundColor: scheme.secondary.withValues(alpha: 0.3),
+          elevation: 8.0,
+          padding: EdgeInsets.zero,
+        ),
+        child: Icon(widget.icon, size: widget.diameter * 0.45),
+      ),
+    );
+
+    final onLongPress = widget.onLongPress;
+    if (widget.onHold == null && onLongPress == null) {
+      return button;
+    }
+
+    return GestureDetector(
+      onLongPressStart: widget.onHold == null || !widget.enabled
+          ? null
+          : (_) => _startHold(),
+      onLongPressEnd: widget.onHold == null || !widget.enabled
+          ? null
+          : (_) => _stopHold(),
+      onLongPressCancel: widget.onHold == null || !widget.enabled
+          ? null
+          : _stopHold,
+      onLongPress: onLongPress == null || !widget.enabled ? null : onLongPress,
+      child: button,
     );
   }
 }
 
-AlertDialog Function(BuildContext) sitNotSetAlert = (context) => AlertDialog(
-  title: Text("Sitting height not set"),
-  content: Text("Raise or lower your desk to sitting height, then log press the 'Sit' button to save."),
-  actions: [
-    FlatButton(
-      child: Text("Ok"),
-      onPressed: () {
-        Navigator.pop(context);
-      }
-    )
-  ]
-);
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.currentName});
 
-AlertDialog Function(BuildContext) standNotSetAlert = (context) => AlertDialog(
-  title: Text("Standing height not set"),
-  content: Text("Raise or lower your desk to standing height, then log press the 'Stand' button to save."),
-  actions: [
-    FlatButton(
-      child: Text("Ok"),
-      onPressed: () {
-        Navigator.pop(context);
-      }
-    )
-  ]
-);
+  final String currentName;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final _controller = TextEditingController(text: widget.currentName);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          Icon(Icons.edit, color: Theme.of(context).colorScheme.secondary),
+          const SizedBox(width: 8.0),
+          const Text('Enter new desk name'),
+        ],
+      ),
+      content: TextField(
+        maxLength: 20,
+        controller: _controller,
+        autofocus: true,
+        onSubmitted: (value) => Navigator.pop(context, value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, _controller.text),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
