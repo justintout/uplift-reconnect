@@ -151,6 +151,24 @@ simply starts reporting the new position.
 - not the actual Firmware Revision String characteristic? 
 - `READ`: `0x02, 0x01`
 
+## Licences
+The in-app licence page is Flutter's `showLicensePage`, so it lists the Dart packages from the
+`NOTICES` asset Flutter generates. That asset knows nothing about the libraries the native builds
+pull in, so `assets/native_licenses.json` carries those: the Maven artefacts Gradle resolves, and
+the pods CocoaPods installs.
+
+That file is generated. After any dependency change, build both platforms once so Gradle and
+CocoaPods have something to read, then regenerate it:
+
+```
+flutter build apk --debug
+flutter build ios --debug --no-codesign
+dart run tool/update_native_licenses.dart
+```
+
+The script fails if it meets a library with no licence rather than leaving it out, so a new
+dependency cannot go unattributed by accident.
+
 ## Built With
 Check the in-app License page and `pubspec.yaml` to get a full list of software. In particular, this app uses:
 - [UniversalBLE](https://pub.dev/packages/universal_ble) for BLE communications 
