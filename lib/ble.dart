@@ -102,6 +102,7 @@ class Device extends ChangeNotifier {
       await _discover();
     } catch (error) {
       _setDisconnected('failed to connect: $error');
+      debugPrint('connection failed: $error');
       // Failing partway through discovery can leave the link up.
       try {
         await UniversalBle.disconnect(id);

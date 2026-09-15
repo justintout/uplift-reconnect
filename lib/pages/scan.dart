@@ -52,13 +52,12 @@ class _ScanPageState extends State<ScanPage> {
 
     try {
       await ensureBlePermissions();
-      // A desk that is already connected stops advertising, so drop any
-      // existing link before looking for it again.
-      final connected = await UniversalBle.getSystemDevices(
-        withServices: [serviceUuid],
-      );
-      for (final device in connected) {
-        await UniversalBle.disconnect(device.deviceId);
+      // A desk the phone already holds has stopped advertising, so it would
+      // never show up in the scan below. Listing held devices is a plain read;
+      // asking for them filtered by service would make the plugin connect to
+      // each one and disconnect it again.
+      for (final device in await UniversalBle.getSystemDevices()) {
+        _devices[device.deviceId] = device;
       }
       await UniversalBle.startScan(
         scanFilter: ScanFilter(withServices: [serviceUuid]),

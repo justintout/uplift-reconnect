@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:universal_ble/universal_ble.dart';
@@ -30,20 +31,30 @@ class _HomePageState extends State<HomePage> {
   /// The dongle keeps its link to the phone after the app closes, so prefer a
   /// desk the OS already has connected. Failing that, fall back to the desk
   /// this app connected to last time, if the user wants that.
+  ///
+  /// The lookup deliberately passes no service filter. On Android, filtering
+  /// by service makes the plugin connect to each device to read its services
+  /// and then disconnect it, which tears down the link this method is about
+  /// to make.
   Future<void> _lookForDesk(Settings settings) async {
     Device? desk;
     try {
       await ensureBlePermissions();
-      final connected = await UniversalBle.getSystemDevices(
-        withServices: [serviceUuid],
-      );
-      if (connected.length == 1) {
-        desk = Device(id: connected.single.deviceId, name: connected.single.name);
-      } else if (connected.isEmpty && settings.autoConnect) {
-        final id = settings.lastDeskId;
-        if (id != null) {
-          desk = Device(id: id, name: settings.lastDeskName);
+      final connected = await UniversalBle.getSystemDevices();
+      final lastDeskId = settings.lastDeskId;
+      // Only a device this app has connected to before is a safe guess. Other
+      // things on the phone are GATT-connected too, and connecting to one to
+      // find out what it is would just fail slowly.
+      for (final device in connected) {
+        if (device.deviceId == lastDeskId) {
+          desk = Device(id: device.deviceId, name: device.name);
+          break;
         }
+      }
+      // The desk is usually not held by the system at all, because the app is
+      // what connects it, so fall back to connecting to the remembered id.
+      if (desk == null && settings.autoConnect && lastDeskId != null) {
+        desk = Device(id: lastDeskId, name: settings.lastDeskName);
       }
     } catch (error) {
       debugPrint('could not look up connected desks: $error');
@@ -96,6 +107,18 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final settings = SettingsScope.of(context);
     final device = _device;
+    if (device == null) {
+      return _scaffold(context, null, settings);
+    }
+    // The desk reports connection and height changes on its own, so the page
+    // has to rebuild whenever the device notifies, not only on setState.
+    return ListenableBuilder(
+      listenable: device,
+      builder: (context, _) => _scaffold(context, device, settings),
+    );
+  }
+
+  Widget _scaffold(BuildContext context, Device? device, Settings settings) {
     final height = device?.height;
 
     // Whichever panel has something to say takes the slack: the desk card
@@ -281,8 +304,10 @@ class ControlButtonBar extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Four circles across the panel, leaving room for the gaps.
-        final diameter = (constraints.maxWidth / 4) - 20.0;
+        // Four circles across the panel, leaving room for the gaps. The very
+        // first frame can arrive before the view has a width, which would make
+        // this negative and blow up the SizedBox underneath.
+        final diameter = math.max(0.0, (constraints.maxWidth / 4) - 20.0);
         return _Card(
           padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 16.0),
           child: Row(
