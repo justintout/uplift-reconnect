@@ -1,11 +1,11 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import 'package:uplift_reconnect/ble.dart';
+import 'package:uplift_reconnect/licenses.dart';
 import 'package:uplift_reconnect/main.dart';
 import 'package:uplift_reconnect/settings.dart';
 
@@ -225,4 +225,21 @@ void main() {
       expect(find.byType(ElevatedButton), findsNWidgets(4));
     });
   }
+
+  // The licences page reads LicenseRegistry, which is also what carries the
+  // native dependencies. If the generated asset goes missing or stops parsing,
+  // this is the only thing that notices.
+  testWidgets('the licences page is given the native dependencies', (
+    tester,
+  ) async {
+    registerNativeLicenses();
+
+    final packages = (await LicenseRegistry.licenses.toList())
+        .expand((entry) => entry.packages)
+        .toSet();
+
+    // One Maven coordinate from the Android side, one pod from the iOS side.
+    expect(packages, contains('androidx.core:core'));
+    expect(packages, contains('universal_ble'));
+  });
 }

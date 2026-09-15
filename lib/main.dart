@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'const.dart';
+import 'licenses.dart';
 import 'pages/home.dart';
 import 'pages/scan.dart';
 import 'pages/settings.dart';
@@ -9,6 +10,7 @@ import 'settings.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  registerNativeLicenses();
   final settings = Settings(await SharedPreferences.getInstance());
   runApp(UpliftReconnectApp(settings: settings));
 }
