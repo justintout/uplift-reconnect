@@ -73,11 +73,15 @@ then the command repeated after a zero and terminated with `0x7e`.
 |-------------|----------------------------|-----------------------------------------------------|
 | up          | `f1, f1, 01, 00, 01, 7e`   | move up while held                                  |
 | down        | `f1, f1, 02, 00, 02, 7e`   | move down while held                                |
-| save sit    | `f1, f1, 03, 00, 03, 7e`   | store the current height as the desk's sit preset   |
-| save stand  | `f1, f1, 04, 00, 04, 7e`   | store the current height as the desk's stand preset |
-| sit         | `f1, f1, 05, 00, 05, 7e`   | move to the desk's stored sit preset                |
-| stand       | `f1, f1, 06, 00, 06, 7e`   | move to the desk's stored stand preset              |
+| save stand  | `f1, f1, 03, 00, 03, 7e`   | store the current height as the desk's stand preset |
+| save sit    | `f1, f1, 04, 00, 04, 7e`   | store the current height as the desk's sit preset   |
+| stand       | `f1, f1, 05, 00, 05, 7e`   | move to the desk's stored stand preset              |
+| sit         | `f1, f1, 06, 00, 06, 7e`   | move to the desk's stored sit preset                |
 | query       | `f1, f1, 07, 00, 07, 7e`   | ask the desk to report its current height           |
+
+The capture these commands came from labelled 05 `sit` and 06 `stand`, but a real desk does the opposite,
+and 03 and 04 swap with them: 06 recalls the sitting height and 03 stores it, 05 recalls the standing
+height and 04 stores it. The table above is what the hardware does.
 
 The sit and stand presets live in the desk's controller rather than in the app, so they survive a
 reinstall and match what the physical button pad uses. Saving a preset is not acknowledged; the desk

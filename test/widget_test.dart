@@ -143,16 +143,40 @@ void main() {
     // stopped at "connecting..." because nothing listened to the device.
     expect(find.textContaining('tap to disconnect'), findsOneWidget);
 
-    // A height notification has to reach the readout too. Three-byte packets
-    // carry the height in the first byte.
+    // A height report is `f2 f2 01 03 01 <height> <byte> <checksum> 7e`, and
+    // the ATT payload delivers it in arbitrary chunks. This is the one the
+    // desk actually sent while reading 126, whose height byte is 0x7e — the
+    // same value as the terminator.
+    const report = [0xf2, 0xf2, 0x01, 0x03, 0x01, 0x7e, 0x0f, 0x92, 0x7e];
     desk.updateCharacteristicValue(
       'desk-1',
       dataOutCharacteristicUuid,
-      Uint8List.fromList([31, 7, 43]),
+      Uint8List.fromList(report.sublist(0, 6)),
       null,
     );
     await tester.pumpAndSettle();
-    expect(find.text('28.4"'), findsOneWidget);
+    expect(find.text('37.9"'), findsNothing);
+
+    desk.updateCharacteristicValue(
+      'desk-1',
+      dataOutCharacteristicUuid,
+      Uint8List.fromList(report.sublist(6)),
+      null,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('37.9"'), findsOneWidget);
+
+    // The desk also emits `f2 f2 <counter> 02 ...` frames. Their fifth byte is
+    // a counter, and reading it as a height is what made the readout wander.
+    desk.updateCharacteristicValue(
+      'desk-1',
+      dataOutCharacteristicUuid,
+      Uint8List.fromList([0xf2, 0xf2, 0x28, 0x02, 0x14, 0x48, 0x86, 0x7e]),
+      null,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('38.7"'), findsNothing);
+    expect(find.text('37.9"'), findsOneWidget);
   });
 
   testWidgets('settings page exposes the desk preferences', (tester) async {

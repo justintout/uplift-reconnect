@@ -12,13 +12,18 @@ const nameCharacteristicUuid = '0000ff06-0000-1000-8000-00805f9b34fb';
 // Commands are `f1 f1 <command> 00 <command> 7e`: a fixed prefix, the command
 // byte, a zero, the command repeated as a checksum, and a terminator. Captured
 // from the Uplift Connect app; see the README for the full trace.
+//
+// The write-up these came from labelled 05 sit and 06 stand, but a real desk
+// does the opposite, and the save commands go with them: 06 recalls the sitting
+// height and 03 stores it, 05 recalls the standing height and 04 stores it, so
+// whichever button saves a preset is the one that recalls it.
 const _queryPacket = [0xf1, 0xf1, 0x07, 0x00, 0x07, 0x7e];
 const _upPacket = [0xf1, 0xf1, 0x01, 0x00, 0x01, 0x7e];
 const _downPacket = [0xf1, 0xf1, 0x02, 0x00, 0x02, 0x7e];
-const _saveSitPacket = [0xf1, 0xf1, 0x03, 0x00, 0x03, 0x7e];
-const _saveStandPacket = [0xf1, 0xf1, 0x04, 0x00, 0x04, 0x7e];
-const _sitPacket = [0xf1, 0xf1, 0x05, 0x00, 0x05, 0x7e];
-const _standPacket = [0xf1, 0xf1, 0x06, 0x00, 0x06, 0x7e];
+const _saveStandPacket = [0xf1, 0xf1, 0x03, 0x00, 0x03, 0x7e];
+const _saveSitPacket = [0xf1, 0xf1, 0x04, 0x00, 0x04, 0x7e];
+const _standPacket = [0xf1, 0xf1, 0x05, 0x00, 0x05, 0x7e];
+const _sitPacket = [0xf1, 0xf1, 0x06, 0x00, 0x06, 0x7e];
 
 const _connectionTimeout = Duration(seconds: 10);
 
@@ -88,6 +93,10 @@ class Device extends ChangeNotifier {
 
   StreamSubscription<bool>? _connectionSubscription;
   StreamSubscription<Uint8List>? _valueSubscription;
+
+  /// Bytes of a part-received packet, waiting for its terminator.
+  final _pending = <int>[];
+  static const _maxPendingBytes = 64;
 
   Future<void> connect() async {
     if (_state != DeskState.disconnected) {
@@ -161,27 +170,52 @@ class Device extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Three packet shapes arrive on data-out, all carrying the height byte in a
-  /// different place. See the README for captured samples of each.
-  void _onNotification(Uint8List notification) {
-    // Unsolicited: the desk's own button pad moved it.
-    if (notification.length == 3) {
-      _setHeight(Height(notification[0]));
-      return;
-    }
-    if (notification.length < 18) {
-      return;
-    }
-    if (notification.first == 0xf2) {
-      // First half of a query response. Carries no height, and is the only
-      // packet that ends in something other than the 0x7e terminator.
-      if (notification.last == 0x7e) {
-        _setHeight(Height(notification[5]));
+  /// Data-out is a stream of `f2 f2 <payload> <checksum> 7e` packets delivered
+  /// in arbitrary chunks, so packets have to be cut back out of it first.
+  ///
+  /// A payload byte can equal 0x7e — the height 126 is exactly that — so a
+  /// terminator only ends a packet when the byte before it checks out as the
+  /// sum of everything since the `f2 f2` prefix.
+  void _onNotification(Uint8List chunk) {
+    _pending.addAll(chunk);
+
+    var start = 0;
+    while (_pending.length - start >= 5) {
+      if (_pending[start] != 0xf2 || _pending[start + 1] != 0xf2) {
+        start++;
+        continue;
       }
-      return;
+      final end = _packetEnd(start);
+      if (end < 0) break;
+      _handlePacket(_pending.sublist(start, end));
+      start = end;
     }
-    // Second half of a query response.
-    _setHeight(Height(notification[17]));
+    _pending.removeRange(0, start);
+
+    // A packet that never checks out must not grow this without bound.
+    if (_pending.length > _maxPendingBytes) {
+      _pending.clear();
+    }
+  }
+
+  /// Index just past the packet starting at [start], or -1 while it is still
+  /// incomplete.
+  int _packetEnd(int start) {
+    var sum = 0;
+    for (var i = start + 3; i < _pending.length; i++) {
+      if (_pending[i] == 0x7e && sum == _pending[i - 1]) return i + 1;
+      sum = (sum + _pending[i - 1]) & 0xff;
+    }
+    return -1;
+  }
+
+  /// A height report is `f2 f2 01 03 01 <height> <byte> <checksum> 7e`. The
+  /// desk also emits `f2 f2 <counter> 02 ...` frames whose fifth byte is a
+  /// counter rather than a height, so the shape is checked before reading it.
+  void _handlePacket(List<int> packet) {
+    if (packet.length == 9 && packet[2] == 0x01 && packet[3] == 0x03) {
+      _setHeight(Height(packet[5]));
+    }
   }
 
   void _setHeight(Height height) {
