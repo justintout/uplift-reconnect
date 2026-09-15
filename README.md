@@ -12,7 +12,9 @@ Clone this repository, then from the root run `flutter pub get` and `flutter run
 attached. The desk needs the Uplift Connect dongle plugged in and Bluetooth switched on. The app asks for
 the Bluetooth permissions it needs the first time it starts.
 
-To produce an installable build, use `flutter build apk` for Android or `flutter build ipa` for iOS.
+To produce builds, run `make`. That builds Android and iOS, regenerating the licence list first so
+the shipped app carries it. `make android` or `make ios` builds one platform. Shipping needs signing:
+`flutter build appbundle` for Play, or `flutter build ipa` for the App Store.
 
 ## Settings
 - **Reconnect automatically** — connect to the last desk used whenever the app opens. The dongle keeps its
@@ -161,8 +163,9 @@ The in-app licence page is Flutter's `showLicensePage`, so it lists the Dart pac
 pull in, so `assets/native_licenses.json` carries those: the Maven artefacts Gradle resolves, and
 the pods CocoaPods installs.
 
-That file is generated. After any dependency change, build both platforms once so Gradle and
-CocoaPods have something to read, then regenerate it:
+That file is generated. After any dependency change, run `make licenses` to regenerate it. That
+builds both platforms first if they have never been built, because Gradle and CocoaPods have to have
+produced something to read. The equivalent by hand is:
 
 ```
 flutter build apk --debug
