@@ -14,6 +14,13 @@ the Bluetooth permissions it needs the first time it starts.
 
 To produce an installable build, use `flutter build apk` for Android or `flutter build ipa` for iOS.
 
+## Settings
+- **Reconnect automatically** — connect to the last desk used whenever the app opens. The dongle keeps its
+  link to the phone, so this usually just picks up the connection the OS already established.
+- **Height units** — show the height in inches or centimetres. The desk reports the same byte either way.
+- **Held button repeat** — how often the up and down buttons re-send while held. The desk keeps moving for a
+  moment after the last command arrives, so a shorter interval stops it sooner when you let go.
+
 ## BLE API 
 The Uplift BLE API was reverse engineered by capturing communication between the Uplift Connect Android app and dongle. Captures were made with the Android "Bluetooth HCI Logging" developer option and by sniffing BLE packets using an [Ubertooth One](https://greatscottgadgets.com/ubertoothone/).
 

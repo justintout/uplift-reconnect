@@ -5,6 +5,7 @@ import 'package:universal_ble/universal_ble.dart';
 
 import '../ble.dart';
 import '../const.dart';
+import '../settings.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -15,44 +16,62 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   Device? _device;
-  bool _checkingForDesk = true;
+  bool _looking = true;
+  bool _looked = false;
 
   @override
-  void initState() {
-    super.initState();
-    _adoptConnectedDesk();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_looked) return;
+    _looked = true;
+    _lookForDesk(SettingsScope.of(context));
   }
 
-  // The dongle keeps a connection to the phone after the app closes, so on
-  // launch look for a desk that is already connected and pick it up.
-  Future<void> _adoptConnectedDesk() async {
+  /// The dongle keeps its link to the phone after the app closes, so prefer a
+  /// desk the OS already has connected. Failing that, fall back to the desk
+  /// this app connected to last time, if the user wants that.
+  Future<void> _lookForDesk(Settings settings) async {
     Device? desk;
     try {
       await ensureBlePermissions();
-      final devices = await UniversalBle.getSystemDevices(
+      final connected = await UniversalBle.getSystemDevices(
         withServices: [serviceUuid],
       );
-      if (devices.length == 1) {
-        desk = Device(id: devices.single.deviceId, name: devices.single.name);
+      if (connected.length == 1) {
+        desk = Device(id: connected.single.deviceId, name: connected.single.name);
+      } else if (connected.isEmpty && settings.autoConnect) {
+        final id = settings.lastDeskId;
+        if (id != null) {
+          desk = Device(id: id, name: settings.lastDeskName);
+        }
       }
     } catch (error) {
-      debugPrint('could not list connected desks: $error');
+      debugPrint('could not look up connected desks: $error');
     }
+
     if (!mounted) return;
     setState(() {
       _device = desk;
-      _checkingForDesk = false;
+      _looking = false;
     });
-    await desk?.connect();
+    if (desk != null) {
+      await _connect(desk, settings);
+    }
   }
 
-  Future<void> _scan() async {
+  Future<void> _connect(Device desk, Settings settings) async {
+    await desk.connect();
+    if (desk.ready) {
+      await settings.rememberDesk(desk);
+    }
+  }
+
+  Future<void> _scan(Settings settings) async {
     final result = await Navigator.pushNamed(context, '/scan');
     if (result is! BleDevice || !mounted) return;
-    setState(() {
-      _device = Device(id: result.deviceId, name: result.name);
-    });
-    await _device?.connect();
+    final desk = Device(id: result.deviceId, name: result.name);
+    setState(() => _device = desk);
+    await _connect(desk, settings);
   }
 
   Future<void> _disconnectAll() async {
@@ -75,20 +94,14 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_checkingForDesk) {
-      return const _StartupScaffold();
-    }
+    final settings = SettingsScope.of(context);
     final device = _device;
-    if (device == null) {
-      return _scaffold(context, null);
-    }
-    return ListenableBuilder(
-      listenable: device,
-      builder: (context, _) => _scaffold(context, device),
-    );
-  }
+    final height = device?.height;
 
-  Widget _scaffold(BuildContext context, Device? device) {
+    // Whichever panel has something to say takes the slack: the desk card
+    // while there is no reading, the readout once there is one.
+    final deviceCard = _deviceCard(context, device, settings);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text(appTitle),
@@ -100,79 +113,79 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       body: Padding(
-        padding: const EdgeInsets.all(8.0),
-        child: Flex(
-          direction: Axis.vertical,
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Flexible(flex: 5, child: _hero(context, device)),
-            Flexible(flex: 1, child: _statusLine(context, device)),
-            Flexible(flex: 3, child: ControlButtonBar(device: device)),
+            if (height == null)
+              Expanded(child: deviceCard)
+            else ...[
+              deviceCard,
+              const SizedBox(height: 12.0),
+              Expanded(child: _heightCard(context, height, settings.units)),
+            ],
+            const SizedBox(height: 12.0),
+            ControlButtonBar(
+              device: device,
+              holdInterval: settings.holdInterval,
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _hero(BuildContext context, Device? device) {
+  Widget _deviceCard(BuildContext context, Device? device, Settings settings) {
+    if (_looking) {
+      return const _Card(
+        child: _CardContents(title: 'Looking for your desk...'),
+      );
+    }
     if (device == null) {
-      return _Panel(
-        child: _HeroContents(
+      return _Card(
+        child: _CardContents(
           title: 'Tap to scan for desk',
-          onTap: _scan,
+          caption: 'Make sure the desk dongle is plugged in.',
+          onTap: () => _scan(settings),
           onLongPress: _disconnectAll,
         ),
       );
     }
 
     final contents = switch (device.state) {
-      DeskState.connecting => _HeroContents(
+      DeskState.connecting => _CardContents(
         title: device.name,
-        subtitle: device.id,
         caption: 'connecting...',
       ),
-      DeskState.connected => _HeroContents(
+      DeskState.connected => _CardContents(
         title: device.name,
-        subtitle: device.id,
         caption: 'connected.\ntap to disconnect.\nlong press to rename.',
         onTap: device.disconnect,
         onLongPress: () => _rename(device),
       ),
-      DeskState.disconnected => _HeroContents(
+      DeskState.disconnected => _CardContents(
         title: device.name,
-        subtitle: device.id,
         caption:
             'disconnected.\ntap to reconnect.\nlong press to scan again.',
-        onTap: device.connect,
-        onLongPress: _scan,
+        onTap: () => _connect(device, settings),
+        onLongPress: () => _scan(settings),
       ),
     };
-    return _Panel(child: contents);
+    return _Card(child: contents);
   }
 
-  Widget _statusLine(BuildContext context, Device? device) {
-    final style = Theme.of(context).textTheme.titleMedium;
-    final height = device?.height;
-    if (device == null || !device.ready || height == null) {
-      return Text(device?.stateText ?? ' ', style: style);
-    }
-    return Text('Height: ${height.inchesString}', style: style);
-  }
-}
-
-class _StartupScaffold extends StatelessWidget {
-  const _StartupScaffold();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text(appTitle)),
-      body: const Padding(
-        padding: EdgeInsets.all(8.0),
-        child: _Panel(
-          child: _HeroContents(
-            title: 'Initializing...',
-            subtitle: 'One moment please.',
+  Widget _heightCard(BuildContext context, Height height, HeightUnit unit) {
+    return _Card(
+      padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 24.0),
+      child: Center(
+        // Centimetres make the readout the widest thing on screen, so let it
+        // shrink rather than overflow on a narrow phone.
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            height.format(unit),
+            style: onPanel(Theme.of(context).textTheme.displayLarge),
+            textAlign: TextAlign.center,
           ),
         ),
       ),
@@ -180,38 +193,34 @@ class _StartupScaffold extends StatelessWidget {
   }
 }
 
-/// The rounded indigo tile the hero and control bar sit on.
-class _Panel extends StatelessWidget {
-  const _Panel({required this.child, this.padding});
+/// The rounded indigo tile the desk's panels sit on. Built on [Material] so
+/// taps on the desk card ripple on the tile itself.
+class _Card extends StatelessWidget {
+  const _Card({required this.child, this.padding});
 
   final Widget child;
   final EdgeInsets? padding;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: padding,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(32.0),
-        color: Theme.of(context).colorScheme.primary,
-      ),
-      child: child,
+    return Material(
+      color: Theme.of(context).colorScheme.primary,
+      borderRadius: BorderRadius.circular(32.0),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(padding: padding ?? EdgeInsets.zero, child: child),
     );
   }
 }
 
-class _HeroContents extends StatelessWidget {
-  const _HeroContents({
+class _CardContents extends StatelessWidget {
+  const _CardContents({
     required this.title,
-    this.subtitle,
     this.caption,
     this.onTap,
     this.onLongPress,
   });
 
   final String title;
-  final String? subtitle;
   final String? caption;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
@@ -219,38 +228,36 @@ class _HeroContents extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final subtitle = this.subtitle;
     final caption = this.caption;
 
     return InkWell(
       onTap: onTap,
       onLongPress: onLongPress,
-      borderRadius: BorderRadius.circular(32.0),
       child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              title,
-              style: textTheme.displayMedium,
-              textAlign: TextAlign.center,
-            ),
-            if (subtitle != null)
-              Text(
-                subtitle,
-                style: textTheme.bodySmall,
-                textAlign: TextAlign.center,
-              ),
-            if (caption != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FittedBox(
+                fit: BoxFit.scaleDown,
                 child: Text(
-                  caption,
-                  style: textTheme.bodyLarge,
+                  title,
+                  style: onPanel(textTheme.displayMedium),
                   textAlign: TextAlign.center,
                 ),
               ),
-          ],
+              if (caption != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text(
+                    caption,
+                    style: onPanel(textTheme.bodyLarge),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -258,9 +265,14 @@ class _HeroContents extends StatelessWidget {
 }
 
 class ControlButtonBar extends StatelessWidget {
-  const ControlButtonBar({super.key, required this.device});
+  const ControlButtonBar({
+    super.key,
+    required this.device,
+    required this.holdInterval,
+  });
 
   final Device? device;
+  final Duration holdInterval;
 
   @override
   Widget build(BuildContext context) {
@@ -270,9 +282,9 @@ class ControlButtonBar extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         // Four circles across the panel, leaving room for the gaps.
-        final diameter = (constraints.maxWidth / 4) - 16.0;
-        return _Panel(
-          padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 16.0),
+        final diameter = (constraints.maxWidth / 4) - 20.0;
+        return _Card(
+          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 16.0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
@@ -280,18 +292,21 @@ class ControlButtonBar extends StatelessWidget {
                 icon: Icons.arrow_upward,
                 diameter: diameter,
                 enabled: enabled,
+                holdInterval: holdInterval,
                 onHold: device?.up,
               ),
               _ControlButton(
                 icon: Icons.arrow_downward,
                 diameter: diameter,
                 enabled: enabled,
+                holdInterval: holdInterval,
                 onHold: device?.down,
               ),
               _ControlButton(
                 icon: Icons.accessibility,
                 diameter: diameter,
                 enabled: enabled,
+                holdInterval: holdInterval,
                 onPressed: device == null ? null : () => device.stand(),
                 onLongPress: device == null
                     ? null
@@ -301,6 +316,7 @@ class ControlButtonBar extends StatelessWidget {
                 icon: Icons.airline_seat_legroom_normal,
                 diameter: diameter,
                 enabled: enabled,
+                holdInterval: holdInterval,
                 onPressed: device == null ? null : () => device.sit(),
                 onLongPress: device == null
                     ? null
@@ -334,6 +350,7 @@ class _ControlButton extends StatefulWidget {
     required this.icon,
     required this.diameter,
     required this.enabled,
+    required this.holdInterval,
     this.onPressed,
     this.onLongPress,
     this.onHold,
@@ -342,6 +359,7 @@ class _ControlButton extends StatefulWidget {
   final IconData icon;
   final double diameter;
   final bool enabled;
+  final Duration holdInterval;
   final VoidCallback? onPressed;
   final VoidCallback? onLongPress;
   final VoidCallback? onHold;
@@ -351,13 +369,14 @@ class _ControlButton extends StatefulWidget {
 }
 
 class _ControlButtonState extends State<_ControlButton> {
-  static const _holdInterval = Duration(milliseconds: 1000);
-
   Timer? _holdTimer;
 
   void _startHold() {
     widget.onHold?.call();
-    _holdTimer = Timer.periodic(_holdInterval, (_) => widget.onHold?.call());
+    _holdTimer = Timer.periodic(
+      widget.holdInterval,
+      (_) => widget.onHold?.call(),
+    );
   }
 
   void _stopHold() {
@@ -385,8 +404,8 @@ class _ControlButtonState extends State<_ControlButton> {
           shape: const CircleBorder(),
           backgroundColor: scheme.secondary,
           foregroundColor: scheme.primary,
-          disabledBackgroundColor: scheme.secondary.withValues(alpha: 0.12),
-          disabledForegroundColor: scheme.secondary.withValues(alpha: 0.3),
+          disabledBackgroundColor: scheme.secondary.withValues(alpha: 0.22),
+          disabledForegroundColor: scheme.secondary.withValues(alpha: 0.5),
           elevation: 8.0,
           padding: EdgeInsets.zero,
         ),

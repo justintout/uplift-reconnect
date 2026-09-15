@@ -47,8 +47,17 @@ class Height {
   final int value;
 
   double get inches => ((243 + value) / 10) + 1;
-  String get inchesString => '${inches.toStringAsFixed(1)}"';
+  double get centimeters => inches * 2.54;
+
+  String format(HeightUnit unit) => switch (unit) {
+    HeightUnit.inches => '${inches.toStringAsFixed(1)}"',
+    HeightUnit.centimeters => '${centimeters.toStringAsFixed(1)} cm',
+  };
 }
+
+/// The desk reports the same raw byte either way; this only changes how the
+/// app writes it out.
+enum HeightUnit { inches, centimeters }
 
 /// A single desk. Wraps the BLE plumbing and exposes the desk's own controls.
 class Device extends ChangeNotifier {

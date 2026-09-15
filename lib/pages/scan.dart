@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import '../ble.dart';
+import '../const.dart';
 
 class ScanPage extends StatefulWidget {
   const ScanPage({super.key});
@@ -166,6 +167,7 @@ class _ResultTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(32.0)),
       color: Theme.of(context).colorScheme.primary,
@@ -175,8 +177,8 @@ class _ResultTile extends StatelessWidget {
           size: 32,
           color: Theme.of(context).colorScheme.secondary,
         ),
-        title: Text(device.name ?? 'Unnamed desk'),
-        subtitle: Text(device.deviceId),
+        title: Text(device.name ?? 'Unnamed desk', style: onPanel(textTheme.bodyLarge)),
+        subtitle: Text(device.deviceId, style: onPanel(textTheme.bodySmall)),
         onTap: onTap,
       ),
     );

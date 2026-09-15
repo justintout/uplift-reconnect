@@ -2,7 +2,7 @@ name: uplift_reconnect
 description: Control Uplift standing desks that have the Uplift Connect BLE dongle installed.
 publish_to: none
 
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: ^3.10.0
@@ -10,6 +10,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  font_awesome_flutter: ^11.0.0
+  shared_preferences: ^2.5.5
   universal_ble: ^2.3.0
   url_launcher: ^6.3.2
 
